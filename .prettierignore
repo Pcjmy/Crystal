@@ -1,0 +1,6 @@
+node_modules
+dist
+build
+.crystal
+docs/.vitepress/dist
+docs/.vitepress/cache

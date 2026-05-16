@@ -1,0 +1,37 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Crystal CLI (Chat)",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "--inspect", "${workspaceFolder}/src/cli/index.ts", "chat", "--allow-edit", "--allow-run"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Debug Crystal CLI (Run)",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "--inspect", "${workspaceFolder}/src/cli/index.ts", "run", "${input:runTask}", "--allow-edit", "--allow-run"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Attach to Bun",
+      "type": "node",
+      "request": "attach",
+      "port": 9229
+    }
+  ],
+  "inputs": [
+    {
+      "id": "runTask",
+      "type": "promptString",
+      "description": "Enter the task to run",
+      "default": "读取 package.json 的 scripts 字段"
+    }
+  ]
+}
