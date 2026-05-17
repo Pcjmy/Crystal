@@ -15,6 +15,7 @@ import { InputPanel } from "./chat/components/InputPanel";
 import { StatusBar } from "./chat/components/StatusBar";
 import { THEME, SPINNER_FRAMES } from "./chat/theme";
 import { listSessionSummaries, loadSessionMessages } from "../infra/sessionLogs";
+import pkg from "../../package.json";
 
 export function ChatApp(props: { workspaceRoot: string; sessionId: string; allowRun: boolean; allowEdit: boolean }) {
   const { exit } = useApp();
@@ -29,8 +30,10 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
   }, []);
 
   const [items, setItems] = useState<ChatItem[]>([
-    { kind: "assistant", text: "Crystal is ready." },
-    { kind: "assistant", text: "Tips: /read <path> · /search <text> · /edit <path> <content> · /run <command>" },
+    { kind: "meta", text: "Tips for getting started:" },
+    { kind: "meta", text: "1. Ask questions, edit files, or run commands." },
+    { kind: "meta", text: "2. Be specific for the best results." },
+    { kind: "meta", text: "3. /help for more information." },
   ]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -85,6 +88,11 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
     async (text: string) => {
       if (!text.trim()) return;
       if (busy) return;
+
+      if (text.trim() === "/help") {
+        setShowHelp((v) => !v);
+        return;
+      }
 
       if (text.trim() === "/resume") {
         setResumeMenu({ loading: true, sessions: [], selectedIndex: 0 });
@@ -214,6 +222,7 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
               messagesRef.current = msgs;
               sessionIdRef.current = selected.sessionId;
               setSessionId(selected.sessionId);
+              setTotalTokens(loaded.totalTokens);
               setItems(messagesToChatItems(msgs, selected.sessionId));
             } catch (e) {
               setItems((prev) => [...prev, { kind: "error", text: e instanceof Error ? e.message : "Failed to resume session" }]);
@@ -354,11 +363,13 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
     if (key.return) {
       const text = input;
       setInput("");
+      if (showHelp) setShowHelp(false);
       void submit(text);
       return;
     }
 
     if (key.backspace || key.delete) {
+      if (showHelp) setShowHelp(false);
       setInput((s) => s.slice(0, -1));
       return;
     }
@@ -373,29 +384,27 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
       return;
     }
 
-    if (!key.ctrl && !key.meta && ch) setInput((s) => s + ch);
+    if (!key.ctrl && !key.meta && ch) {
+      if (showHelp) setShowHelp(false);
+      setInput((s) => s + ch);
+    }
   });
 
   const spinner = busy ? SPINNER_FRAMES[spinnerFrame] : " ";
 
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1} height="100%">
-      <Box
-        borderStyle="round"
-        borderColor={THEME.brand}
-        paddingX={1}
-        paddingY={0}
-        flexDirection="column"
-        marginBottom={1}
-      >
+      <Box flexDirection="column" marginBottom={1}>
         <Box justifyContent="space-between">
           <Banner title="CRYSTAL" width={stdoutWidth} />
           <Text dimColor>{spinner}</Text>
         </Box>
-        <Text dimColor>?: help · Ctrl+C / Esc exit · Ctrl+L clear · Ctrl+X abort</Text>
+        <Text>{" "}</Text>
+        <Text>{" "}</Text>
+        <Text dimColor>{`CRYSTAL v${pkg.version}`}</Text>
       </Box>
 
-      <Box flexGrow={1} minHeight={8} borderStyle="round" borderColor={THEME.panel} paddingX={1} paddingY={0}>
+      <Box flexGrow={1} minHeight={8} paddingX={0} paddingY={0}>
         <MessageList items={items} width={stdoutWidth} />
       </Box>
 
@@ -493,7 +502,7 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
             </Box>
           </Box>
         ) : (
-          <Text dimColor>?: help · /read /search /edit /run</Text>
+          <Text dimColor>?: help · /help · /read /search /edit /run</Text>
         )}
       </Box>
     </Box>

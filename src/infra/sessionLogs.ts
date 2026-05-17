@@ -37,7 +37,10 @@ export async function listSessionSummaries(workspaceRoot: string): Promise<Array
   return out;
 }
 
-export async function loadSessionMessages(workspaceRoot: string, sessionId: string): Promise<{ messages: Message[] }> {
+export async function loadSessionMessages(
+  workspaceRoot: string,
+  sessionId: string,
+): Promise<{ messages: Message[]; totalTokens: number }> {
   const filePath = path.join(workspaceRoot, ".crystal", "sessions", `${sessionId}.jsonl`);
   const text = await fs.readFile(filePath, "utf8");
   const lines = text.split("\n").filter((l) => l.trim().length > 0);
@@ -51,11 +54,21 @@ export async function loadSessionMessages(workspaceRoot: string, sessionId: stri
   }
 
   const appended: Message[] = [];
+  let totalTokens = 0;
   for (const e of entries) {
-    if (e.event !== "message_append") continue;
-    const msg = (e.data as any)?.message as Message | undefined;
-    if (!msg) continue;
-    appended.push(msg);
+    if (e.event === "message_append") {
+      const msg = (e.data as any)?.message as Message | undefined;
+      if (!msg) continue;
+      appended.push(msg);
+    }
+
+    if (e.event === "assistant_message") {
+      const usage = (e.data as any)?.usage as { totalTokens?: unknown } | null | undefined;
+      const tt = usage?.totalTokens;
+      if (typeof tt === "number" && Number.isFinite(tt) && tt > 0) {
+        totalTokens += tt;
+      }
+    }
   }
 
   const fallback: Message[] = [{ role: "system", content: "You are Crystal." }];
@@ -79,12 +92,12 @@ export async function loadSessionMessages(workspaceRoot: string, sessionId: stri
     }
   }
 
-  if (appended.length === 0) return { messages: fallback };
+  if (appended.length === 0) return { messages: fallback, totalTokens };
 
   const hasSystemInAppended = appended.some((m) => m.role === "system");
-  if (hasSystemInAppended) return { messages: appended };
+  if (hasSystemInAppended) return { messages: appended, totalTokens };
 
-  return { messages: mergeMessages(fallback, appended) };
+  return { messages: mergeMessages(fallback, appended), totalTokens };
 }
 
 async function buildSessionLabel(params: { workspaceRoot: string; sessionId: string }): Promise<string> {
