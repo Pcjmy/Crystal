@@ -43,6 +43,17 @@ export type ToolExecutionContext = {
   allowEdit: boolean;
 };
 
+export type ToolConfirmRequest = {
+  toolCall: ToolCall;
+  tool: { name: string; description?: string; permission: ToolPermission };
+  parsedInput: unknown;
+  ctx: Omit<ToolExecutionContext, "signal">;
+};
+
+export type ToolConfirmDecision =
+  | { action: "allow"; ctxPatch?: Partial<Pick<ToolExecutionContext, "allowRun" | "allowEdit">> }
+  | { action: "deny"; userMessage?: string };
+
 export type ToolSpec<TInput, TResult> = {
   name: string;
   description?: string;

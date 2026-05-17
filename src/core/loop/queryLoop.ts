@@ -1,4 +1,15 @@
-import type { AssistantMessage, LoopState, Message, QueryParams, StreamEvent, ToolCall, ToolRegistry } from "../types";
+import type {
+  AssistantMessage,
+  LoopState,
+  Message,
+  QueryParams,
+  StreamEvent,
+  ToolCall,
+  ToolConfirmDecision,
+  ToolConfirmRequest,
+  ToolExecutionContext,
+  ToolRegistry,
+} from "../types";
 import { maybeCompact } from "./compact";
 import { queryModel } from "../model/queryModel";
 import { createSessionLogger } from "../../infra/log";
@@ -8,6 +19,7 @@ export async function* queryLoop(params: {
   tools: ToolRegistry;
   consumedCommandUuids: string[];
   signal: AbortSignal;
+  onToolConfirm?: (req: ToolConfirmRequest) => Promise<ToolConfirmDecision> | ToolConfirmDecision;
 }): AsyncGenerator<StreamEvent> {
   const logger = createSessionLogger({
     workspaceRoot: params.query.toolUseContext.workspaceRoot,
@@ -138,30 +150,64 @@ export async function* queryLoop(params: {
       break;
     }
 
+    let toolCallsExecuted = 0;
     for (const tc of newToolCalls) {
       if (params.signal.aborted) break;
+
+      const tool = params.tools.get(tc.name);
+      const parsed =
+        tool && tool.permission.kind === "confirm" ? safeParse(tool.inputSchema, tc.input) : { ok: true as const, data: tc.input };
+
+      const baseCtx: ToolExecutionContext = {
+        workspaceRoot: state.toolUseContext.workspaceRoot,
+        sessionId: state.toolUseContext.sessionId,
+        signal: params.signal,
+        allowRun: state.toolUseContext.allowRun,
+        allowEdit: state.toolUseContext.allowEdit,
+      };
+
+      let decision: ToolConfirmDecision | undefined;
+      if (tool && tool.permission.kind === "confirm" && parsed.ok && params.onToolConfirm) {
+        const req: ToolConfirmRequest = {
+          toolCall: tc,
+          tool: { name: tool.name, description: tool.description, permission: tool.permission },
+          parsedInput: parsed.data,
+          ctx: {
+            workspaceRoot: baseCtx.workspaceRoot,
+            sessionId: baseCtx.sessionId,
+            allowRun: baseCtx.allowRun,
+            allowEdit: baseCtx.allowEdit,
+          },
+        };
+        decision = await params.onToolConfirm(req);
+      }
+
       await logger.write({
         event: "tool_call",
         turn: state.turnCount,
         data: { uuid: tc.uuid ?? null, name: tc.name, input: safeLogValue(tc.input) } as any,
       });
 
-      const resultMsg = await executeToolCall({
-        toolCall: tc,
-        tools: params.tools,
-        ctx: {
-          workspaceRoot: state.toolUseContext.workspaceRoot,
-          sessionId: state.toolUseContext.sessionId,
-          signal: params.signal,
-          allowRun: state.toolUseContext.allowRun,
-          allowEdit: state.toolUseContext.allowEdit,
-        },
-      });
+      let resultMsg: Message & { role: "tool" };
+      if (decision?.action === "deny") {
+        resultMsg = {
+          role: "tool",
+          toolName: tc.name,
+          toolCallId: tc.uuid,
+          ok: false,
+          content: JSON.stringify({ ok: false, error: "User denied tool execution" }),
+        };
+      } else {
+        const ctx =
+          decision?.action === "allow" && decision.ctxPatch ? ({ ...baseCtx, ...decision.ctxPatch } as ToolExecutionContext) : baseCtx;
+        resultMsg = await executeToolCall({ toolCall: tc, tools: params.tools, ctx });
+      }
 
       if (tc.uuid) params.consumedCommandUuids.push(tc.uuid);
       state.messages = [...state.messages, resultMsg];
       const event: StreamEvent = { type: "tool_result", result: resultMsg };
       yield event;
+      toolCallsExecuted += 1;
       await logger.write({
         event: "tool_result",
         turn: state.turnCount,
@@ -172,9 +218,21 @@ export async function* queryLoop(params: {
           content: truncate(resultMsg.content, 12_000),
         } as any,
       });
+
+      if (decision?.action === "deny") {
+        if (decision.userMessage) {
+          state.messages = [...state.messages, { role: "user", content: decision.userMessage }];
+          await logger.write({
+            event: "user_message",
+            turn: state.turnCount,
+            data: { content: decision.userMessage },
+          });
+        }
+        break;
+      }
     }
 
-    await logger.write({ event: "turn_end", turn: state.turnCount, data: { toolCallsExecuted: newToolCalls.length } });
+    await logger.write({ event: "turn_end", turn: state.turnCount, data: { toolCallsExecuted } });
     state.turnCount += 1;
   }
 

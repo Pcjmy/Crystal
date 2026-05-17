@@ -5,7 +5,7 @@ import { editFileTool } from "../core/tools/builtins/editFile";
 import { readFileTool } from "../core/tools/builtins/readFile";
 import { runCommandTool } from "../core/tools/builtins/runCommand";
 import { searchTool } from "../core/tools/builtins/search";
-import type { Message } from "../core/types";
+import type { Message, ToolConfirmDecision, ToolConfirmRequest } from "../core/types";
 import { queryLoop } from "../core/loop/queryLoop";
 
 import type { ChatItem } from "./chat/types";
@@ -35,9 +35,14 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
   const [busy, setBusy] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [totalTokens, setTotalTokens] = useState(0);
+  const [allowEditInSession, setAllowEditInSession] = useState(props.allowEdit);
+  const [pendingEditConfirm, setPendingEditConfirm] = useState<{ path: string } | null>(null);
+  const [pendingDenyFeedback, setPendingDenyFeedback] = useState<{ path: string; value: string } | null>(null);
+  const [confirmSelectionIndex, setConfirmSelectionIndex] = useState(0);
 
   const messagesRef = useRef<Message[]>([{ role: "system", content: "You are Crystal." }]);
   const controllerRef = useRef<AbortController | null>(null);
+  const pendingToolDecisionRef = useRef<((d: ToolConfirmDecision) => void) | null>(null);
 
   const [spinnerFrame, setSpinnerFrame] = useState(0);
   useEffect(() => {
@@ -45,6 +50,28 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
     const id = setInterval(() => setSpinnerFrame((x) => (x + 1) % 10), 80);
     return () => clearInterval(id);
   }, [busy]);
+
+  const onToolConfirm = useCallback(
+    async (req: ToolConfirmRequest): Promise<ToolConfirmDecision> => {
+      if (req.tool.name !== "editFile") return { action: "allow" };
+
+      const path = (() => {
+        if (typeof req.parsedInput !== "object" || req.parsedInput === null) return "file";
+        const obj = req.parsedInput as Record<string, unknown>;
+        const p = obj["path"];
+        return typeof p === "string" && p.length ? p : "file";
+      })();
+
+      if (allowEditInSession) return { action: "allow", ctxPatch: { allowEdit: true } };
+
+      return await new Promise<ToolConfirmDecision>((resolve) => {
+        pendingToolDecisionRef.current = resolve;
+        setConfirmSelectionIndex(0);
+        setPendingEditConfirm({ path });
+      });
+    },
+    [allowEditInSession],
+  );
 
   const submit = useCallback(
     async (text: string) => {
@@ -67,12 +94,13 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
             workspaceRoot: props.workspaceRoot,
             sessionId: props.sessionId,
             allowRun: props.allowRun,
-            allowEdit: props.allowEdit,
+            allowEdit: allowEditInSession,
           },
         },
         tools,
         consumedCommandUuids: consumed,
         signal: controller.signal,
+        onToolConfirm,
       })) {
         if (ev.type === "text_delta") {
           setItems((prev) => {
@@ -115,13 +143,123 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
       controllerRef.current = null;
       setBusy(false);
     },
-    [busy, props.allowEdit, props.allowRun, props.sessionId, props.workspaceRoot, tools],
+    [allowEditInSession, busy, onToolConfirm, props.allowRun, props.sessionId, props.workspaceRoot, tools],
   );
 
   useInput((ch, key) => {
     if (key.ctrl && ch === "c") {
       controllerRef.current?.abort();
       exit();
+      return;
+    }
+
+    if (key.ctrl && ch === "x") {
+      controllerRef.current?.abort();
+      const resolve = pendingToolDecisionRef.current;
+      if (resolve) {
+        pendingToolDecisionRef.current = null;
+        setPendingEditConfirm(null);
+        setPendingDenyFeedback(null);
+        resolve({ action: "deny" });
+      }
+      return;
+    }
+
+    if (pendingDenyFeedback) {
+      if (key.escape) {
+        const resolve = pendingToolDecisionRef.current;
+        pendingToolDecisionRef.current = null;
+        setPendingDenyFeedback(null);
+        resolve?.({ action: "deny" });
+        return;
+      }
+
+      if (key.return) {
+        const resolve = pendingToolDecisionRef.current;
+        const feedback = pendingDenyFeedback.value.trim();
+        const path = pendingDenyFeedback.path;
+        if (feedback) setItems((prev) => [...prev, { kind: "user", text: feedback }]);
+        pendingToolDecisionRef.current = null;
+        setPendingDenyFeedback(null);
+        resolve?.({
+          action: "deny",
+          userMessage: feedback
+            ? `User denied the edit to ${path}. Please do differently: ${feedback}`
+            : `User denied the edit to ${path}.`,
+        });
+        return;
+      }
+
+      if (key.backspace || key.delete) {
+        setPendingDenyFeedback((s) => (s ? { ...s, value: s.value.slice(0, -1) } : s));
+        return;
+      }
+
+      if (!key.ctrl && !key.meta && ch) {
+        setPendingDenyFeedback((s) => (s ? { ...s, value: s.value + ch } : s));
+        return;
+      }
+
+      return;
+    }
+
+    if (pendingEditConfirm) {
+      if (key.upArrow) {
+        setConfirmSelectionIndex((i) => (i + 2) % 3);
+        return;
+      }
+
+      if (key.downArrow) {
+        setConfirmSelectionIndex((i) => (i + 1) % 3);
+        return;
+      }
+
+      if (key.return) {
+        const resolve = pendingToolDecisionRef.current;
+        const path = pendingEditConfirm.path;
+        const selected = confirmSelectionIndex;
+        pendingToolDecisionRef.current = null;
+        setPendingEditConfirm(null);
+
+        if (selected === 0) {
+          resolve?.({ action: "allow", ctxPatch: { allowEdit: true } });
+          return;
+        }
+
+        if (selected === 1) {
+          setAllowEditInSession(true);
+          resolve?.({ action: "allow", ctxPatch: { allowEdit: true } });
+          return;
+        }
+
+        setPendingDenyFeedback({ path, value: "" });
+        return;
+      }
+
+      if (ch === "1" && !key.ctrl && !key.meta) {
+        const resolve = pendingToolDecisionRef.current;
+        pendingToolDecisionRef.current = null;
+        setPendingEditConfirm(null);
+        resolve?.({ action: "allow", ctxPatch: { allowEdit: true } });
+        return;
+      }
+
+      if ((ch === "2" && !key.ctrl && !key.meta) || (key.meta && ch.toLowerCase() === "m")) {
+        const resolve = pendingToolDecisionRef.current;
+        pendingToolDecisionRef.current = null;
+        setPendingEditConfirm(null);
+        setAllowEditInSession(true);
+        resolve?.({ action: "allow", ctxPatch: { allowEdit: true } });
+        return;
+      }
+
+      if ((ch === "3" && !key.ctrl && !key.meta) || key.escape) {
+        const path = pendingEditConfirm.path;
+        setPendingEditConfirm(null);
+        setPendingDenyFeedback({ path, value: "" });
+        return;
+      }
+
       return;
     }
 
@@ -145,11 +283,6 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
 
     if (key.ctrl && ch === "l") {
       setItems([{ kind: "assistant", text: "Cleared." }]);
-      return;
-    }
-
-    if (key.ctrl && ch === "x") {
-      controllerRef.current?.abort();
       return;
     }
 
@@ -185,17 +318,44 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
       </Box>
 
       <Box marginTop={1} flexDirection="column">
-        <InputPanel value={input} busy={busy} spinner={spinner} />
-        <StatusBar
-          providerLabel={providerLabel}
-          sessionId={props.sessionId}
-          workspaceRoot={props.workspaceRoot}
-          allowRun={props.allowRun}
-          allowEdit={props.allowEdit}
-          width={stdoutWidth}
-          totalTokens={totalTokens}
-        />
-        {showHelp ? (
+        <InputPanel value={pendingDenyFeedback ? pendingDenyFeedback.value : input} busy={busy} spinner={spinner} />
+        {!pendingEditConfirm && !pendingDenyFeedback ? (
+          <StatusBar
+            providerLabel={providerLabel}
+            sessionId={props.sessionId}
+            workspaceRoot={props.workspaceRoot}
+            allowRun={props.allowRun}
+            allowEdit={allowEditInSession}
+            width={stdoutWidth}
+            totalTokens={totalTokens}
+          />
+        ) : null}
+        {pendingEditConfirm ? (
+          <Box flexDirection="column" borderStyle="round" borderColor={THEME.panel} paddingX={1} paddingY={0} marginTop={1}>
+            <Text>{`Do you want to make this edit to ${pendingEditConfirm.path}?`}</Text>
+            <Text dimColor>{" "}</Text>
+            <Text>
+              <Text color={confirmSelectionIndex === 0 ? THEME.brand : THEME.hint}>
+                {confirmSelectionIndex === 0 ? "> " : "  "}1. Yes
+              </Text>
+            </Text>
+            <Text>
+              <Text color={confirmSelectionIndex === 1 ? THEME.brand : THEME.hint}>
+                {confirmSelectionIndex === 1 ? "> " : "  "}2. Yes, and don't ask again this session (alt + m)
+              </Text>
+            </Text>
+            <Text>
+              <Text color={confirmSelectionIndex === 2 ? THEME.brand : THEME.hint}>
+                {confirmSelectionIndex === 2 ? "> " : "  "}3. No, and tell Crystal what to do differently (escape)
+              </Text>
+            </Text>
+          </Box>
+        ) : pendingDenyFeedback ? (
+          <Box flexDirection="column" borderStyle="round" borderColor={THEME.panel} paddingX={1} paddingY={0} marginTop={1}>
+            <Text>{`Tell Crystal what to do differently for ${pendingDenyFeedback.path}:`}</Text>
+            <Text dimColor>{"Enter to send · Esc to deny without message"}</Text>
+          </Box>
+        ) : showHelp ? (
           <Box
             flexDirection="column"
             borderStyle="round"
