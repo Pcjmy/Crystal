@@ -9,6 +9,10 @@ title: CLI 用法
 - `crystal config`：查看当前生效配置
 - `crystal doctor`：环境诊断
 
+## Chat 内置指令
+
+- `/resume`：展示历史会话列表，选择后恢复会话上下文继续对话（↑/↓ 选择，Enter 确认，Esc 取消）
+
 ## 常用参数
 
 - `--root <path>`：指定工作区根目录（默认当前目录）
@@ -45,4 +49,6 @@ crystal chat --allow-edit --allow-run
 ```bash
 crystal run "总结一下这个仓库的架构，并给出改进建议"
 ```
+
+说明：`/resume` 仅在 `chat` 模式可用；历史会话记录保存在 `<workspace>/.crystal/sessions/*.jsonl`。
 

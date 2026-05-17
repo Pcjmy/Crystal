@@ -13,6 +13,7 @@ import type {
 import { maybeCompact } from "./compact";
 import { queryModel } from "../model/queryModel";
 import { createSessionLogger } from "../../infra/log";
+import fs from "node:fs/promises";
 
 export async function* queryLoop(params: {
   query: QueryParams;
@@ -20,14 +21,24 @@ export async function* queryLoop(params: {
   consumedCommandUuids: string[];
   signal: AbortSignal;
   onToolConfirm?: (req: ToolConfirmRequest) => Promise<ToolConfirmDecision> | ToolConfirmDecision;
+  logFromMessageIndex?: number;
 }): AsyncGenerator<StreamEvent> {
   const logger = createSessionLogger({
     workspaceRoot: params.query.toolUseContext.workspaceRoot,
     sessionId: params.query.toolUseContext.sessionId,
   });
 
+  const isFreshLog = await (async () => {
+    try {
+      const st = await fs.stat(logger.filePath);
+      return st.size === 0;
+    } catch {
+      return true;
+    }
+  })();
+
   await logger.write({
-    event: "session_start",
+    event: isFreshLog ? "session_start" : "session_continue",
     data: {
       workspaceRoot: params.query.toolUseContext.workspaceRoot,
       allowRun: params.query.toolUseContext.allowRun,
@@ -46,6 +57,15 @@ export async function* queryLoop(params: {
     hasAttemptedReactiveCompact: false,
     turnCount: 1,
   };
+
+  const logAppendedMessage = async (msg: Message, turn?: number) => {
+    await logger.write({ event: "message_append", turn, data: { message: msg as any } as any });
+  };
+
+  const baseLogIndex = isFreshLog ? 0 : Math.max(0, Math.min(params.logFromMessageIndex ?? state.messages.length, state.messages.length));
+  for (const msg of state.messages.slice(baseLogIndex)) {
+    await logAppendedMessage(msg);
+  }
 
   while (true) {
     if (params.signal.aborted) break;
@@ -129,6 +149,7 @@ export async function* queryLoop(params: {
       ...state.messages,
       { role: "assistant", content: assistant.content, toolCalls: toolCalls.length ? toolCalls : undefined },
     ];
+    await logAppendedMessage(state.messages[state.messages.length - 1]!, state.turnCount);
 
     if (assistant.usage) {
       yield { type: "usage", usage: assistant.usage };
@@ -205,6 +226,7 @@ export async function* queryLoop(params: {
 
       if (tc.uuid) params.consumedCommandUuids.push(tc.uuid);
       state.messages = [...state.messages, resultMsg];
+      await logAppendedMessage(resultMsg, state.turnCount);
       const event: StreamEvent = { type: "tool_result", result: resultMsg };
       yield event;
       toolCallsExecuted += 1;
@@ -221,7 +243,9 @@ export async function* queryLoop(params: {
 
       if (decision?.action === "deny") {
         if (decision.userMessage) {
-          state.messages = [...state.messages, { role: "user", content: decision.userMessage }];
+          const msg: Message = { role: "user", content: decision.userMessage };
+          state.messages = [...state.messages, msg];
+          await logAppendedMessage(msg, state.turnCount);
           await logger.write({
             event: "user_message",
             turn: state.turnCount,

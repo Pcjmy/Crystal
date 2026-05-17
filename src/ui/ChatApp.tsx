@@ -14,6 +14,7 @@ import { MessageList } from "./chat/components/MessageList";
 import { InputPanel } from "./chat/components/InputPanel";
 import { StatusBar } from "./chat/components/StatusBar";
 import { THEME, SPINNER_FRAMES } from "./chat/theme";
+import { listSessionSummaries, loadSessionMessages } from "../infra/sessionLogs";
 
 export function ChatApp(props: { workspaceRoot: string; sessionId: string; allowRun: boolean; allowEdit: boolean }) {
   const { exit } = useApp();
@@ -35,10 +36,17 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
   const [busy, setBusy] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [totalTokens, setTotalTokens] = useState(0);
+  const [sessionId, setSessionId] = useState(props.sessionId);
+  const sessionIdRef = useRef(props.sessionId);
   const [allowEditInSession, setAllowEditInSession] = useState(props.allowEdit);
   const [pendingEditConfirm, setPendingEditConfirm] = useState<{ path: string } | null>(null);
   const [pendingDenyFeedback, setPendingDenyFeedback] = useState<{ path: string; value: string } | null>(null);
   const [confirmSelectionIndex, setConfirmSelectionIndex] = useState(0);
+  const [resumeMenu, setResumeMenu] = useState<{
+    loading: boolean;
+    sessions: Array<{ sessionId: string; label: string }>;
+    selectedIndex: number;
+  } | null>(null);
 
   const messagesRef = useRef<Message[]>([{ role: "system", content: "You are Crystal." }]);
   const controllerRef = useRef<AbortController | null>(null);
@@ -78,9 +86,27 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
       if (!text.trim()) return;
       if (busy) return;
 
+      if (text.trim() === "/resume") {
+        setResumeMenu({ loading: true, sessions: [], selectedIndex: 0 });
+        try {
+          const summaries = await listSessionSummaries(props.workspaceRoot);
+          const top = summaries.slice(0, 20);
+          setResumeMenu({
+            loading: false,
+            sessions: top.map((s) => ({ sessionId: s.sessionId, label: s.label })),
+            selectedIndex: 0,
+          });
+        } catch (e) {
+          setResumeMenu(null);
+          setItems((prev) => [...prev, { kind: "error", text: e instanceof Error ? e.message : "Failed to load sessions" }]);
+        }
+        return;
+      }
+
       setBusy(true);
       setItems((prev) => [...prev, { kind: "user", text }]);
 
+      const baseMessageCount = messagesRef.current.length;
       messagesRef.current = [...messagesRef.current, { role: "user", content: text }];
 
       const controller = new AbortController();
@@ -92,7 +118,7 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
           messages: messagesRef.current,
           toolUseContext: {
             workspaceRoot: props.workspaceRoot,
-            sessionId: props.sessionId,
+            sessionId: sessionIdRef.current,
             allowRun: props.allowRun,
             allowEdit: allowEditInSession,
           },
@@ -101,6 +127,7 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
         consumedCommandUuids: consumed,
         signal: controller.signal,
         onToolConfirm,
+        logFromMessageIndex: baseMessageCount,
       })) {
         if (ev.type === "text_delta") {
           setItems((prev) => {
@@ -143,10 +170,65 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
       controllerRef.current = null;
       setBusy(false);
     },
-    [allowEditInSession, busy, onToolConfirm, props.allowRun, props.sessionId, props.workspaceRoot, tools],
+    [allowEditInSession, busy, onToolConfirm, props.allowRun, props.workspaceRoot, tools],
   );
 
   useInput((ch, key) => {
+    if (resumeMenu) {
+      if (key.escape) {
+        setResumeMenu(null);
+        return;
+      }
+
+      if (!resumeMenu.loading) {
+        if (key.upArrow) {
+          setResumeMenu((s) =>
+            s
+              ? {
+                  ...s,
+                  selectedIndex: s.sessions.length ? (s.selectedIndex + s.sessions.length - 1) % s.sessions.length : 0,
+                }
+              : s,
+          );
+          return;
+        }
+
+        if (key.downArrow) {
+          setResumeMenu((s) =>
+            s ? { ...s, selectedIndex: s.sessions.length ? (s.selectedIndex + 1) % s.sessions.length : 0 } : s,
+          );
+          return;
+        }
+
+        if (key.return) {
+          const selected = resumeMenu.sessions[resumeMenu.selectedIndex];
+          if (!selected) {
+            setResumeMenu(null);
+            return;
+          }
+
+          void (async () => {
+            try {
+              const loaded = await loadSessionMessages(props.workspaceRoot, selected.sessionId);
+              const msgs = normalizeMessages(loaded.messages);
+              messagesRef.current = msgs;
+              sessionIdRef.current = selected.sessionId;
+              setSessionId(selected.sessionId);
+              setItems(messagesToChatItems(msgs, selected.sessionId));
+            } catch (e) {
+              setItems((prev) => [...prev, { kind: "error", text: e instanceof Error ? e.message : "Failed to resume session" }]);
+            } finally {
+              setResumeMenu(null);
+            }
+          })();
+
+          return;
+        }
+      }
+
+      return;
+    }
+
     if (key.ctrl && ch === "c") {
       controllerRef.current?.abort();
       exit();
@@ -319,10 +401,10 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
 
       <Box marginTop={1} flexDirection="column">
         <InputPanel value={pendingDenyFeedback ? pendingDenyFeedback.value : input} busy={busy} spinner={spinner} />
-        {!pendingEditConfirm && !pendingDenyFeedback ? (
+        {!pendingEditConfirm && !pendingDenyFeedback && !resumeMenu ? (
           <StatusBar
             providerLabel={providerLabel}
-            sessionId={props.sessionId}
+            sessionId={sessionId}
             workspaceRoot={props.workspaceRoot}
             allowRun={props.allowRun}
             allowEdit={allowEditInSession}
@@ -354,6 +436,27 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
           <Box flexDirection="column" borderStyle="round" borderColor={THEME.panel} paddingX={1} paddingY={0} marginTop={1}>
             <Text>{`Tell Crystal what to do differently for ${pendingDenyFeedback.path}:`}</Text>
             <Text dimColor>{"Enter to send · Esc to deny without message"}</Text>
+          </Box>
+        ) : resumeMenu ? (
+          <Box flexDirection="column" borderStyle="round" borderColor={THEME.panel} paddingX={1} paddingY={0} marginTop={1}>
+            <Text color={THEME.brand}>Resume a session</Text>
+            {resumeMenu.loading ? (
+              <Text dimColor>Loading…</Text>
+            ) : resumeMenu.sessions.length === 0 ? (
+              <Text dimColor>No sessions found</Text>
+            ) : (
+              <Box flexDirection="column">
+                {resumeMenu.sessions.slice(0, 20).map((s, i) => (
+                  <Text key={s.sessionId}>
+                    <Text color={i === resumeMenu.selectedIndex ? THEME.brand : THEME.hint}>
+                      {i === resumeMenu.selectedIndex ? "> " : "  "}
+                      {s.label}
+                    </Text>
+                  </Text>
+                ))}
+                <Text dimColor>{"Enter to resume · Esc to cancel"}</Text>
+              </Box>
+            )}
           </Box>
         ) : showHelp ? (
           <Box
@@ -395,4 +498,27 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
       </Box>
     </Box>
   );
+}
+
+function normalizeMessages(messages: Message[]): Message[] {
+  const out: Message[] = [];
+  if (!messages.length || messages[0]?.role !== "system") out.push({ role: "system", content: "You are Crystal." });
+  for (const m of messages) {
+    if (m.role === "system" && out.length && out[0].role === "system") continue;
+    out.push(m);
+  }
+  return out;
+}
+
+function messagesToChatItems(messages: Message[], resumedFromSessionId: string): ChatItem[] {
+  const items: ChatItem[] = [];
+  for (const m of messages) {
+    if (m.role === "system") continue;
+    if (m.role === "user") items.push({ kind: "user", text: m.content });
+    else if (m.role === "assistant") items.push({ kind: "assistant", text: m.content });
+    else if (m.role === "tool") items.push({ kind: "tool", toolName: m.toolName, ok: m.ok, content: m.content });
+    else if (m.role === "assistant_summary") items.push({ kind: "meta", text: `Summary: ${m.content}` });
+  }
+  items.push({ kind: "meta", text: `Resumed ${resumedFromSessionId}` });
+  return items;
 }

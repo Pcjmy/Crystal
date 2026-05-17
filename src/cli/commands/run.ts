@@ -36,6 +36,7 @@ export async function runOnce(params: {
     tools,
     consumedCommandUuids: [],
     signal: controller.signal,
+    logFromMessageIndex: 0,
   })) {
     if (ev.type === "text_delta") process.stdout.write(ev.delta);
     if (ev.type === "tool_result") {

@@ -14,14 +14,20 @@ export type LogEntry = {
 };
 
 export type SessionLogger = {
+  filePath: string;
   write(entry: { event: string; turn?: number; data?: JsonValue }): Promise<void>;
 };
 
+export function getSessionLogPath(params: { workspaceRoot: string; sessionId: string }): string {
+  return path.join(params.workspaceRoot, ".crystal", "sessions", `${params.sessionId}.jsonl`);
+}
+
 export function createSessionLogger(params: { workspaceRoot: string; sessionId: string }): SessionLogger {
-  const filePath = path.join(params.workspaceRoot, ".crystal", "sessions", `${params.sessionId}.jsonl`);
+  const filePath = getSessionLogPath(params);
   let seq = 0;
 
   return {
+    filePath,
     async write(entry) {
       await ensureParentDir(filePath);
       const record: LogEntry = {
