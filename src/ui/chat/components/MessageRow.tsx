@@ -15,7 +15,7 @@ export function MessageRow(props: { item: ChatItem; width: number }) {
   if (it.kind === "user") {
     return (
       <Box>
-        <Text color="white">
+        <Text color="cyanBright">
           <Text color="cyanBright">&gt; </Text>
           {it.text}
         </Text>
@@ -27,7 +27,7 @@ export function MessageRow(props: { item: ChatItem; width: number }) {
     return (
       <Box>
         <Text color="white">
-          <Text color="magentaBright">◆ </Text>
+          <Text color="magentaBright">✦ </Text>
           {it.text}
         </Text>
       </Box>

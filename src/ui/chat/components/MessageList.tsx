@@ -1,5 +1,5 @@
 import React from "react";
-import { Box } from "ink";
+import { Box, Text } from "ink";
 import type { ChatItem } from "../types";
 import { MessageRow } from "./MessageRow";
 
@@ -9,9 +9,16 @@ export function MessageList(props: { items: ChatItem[]; width: number; height?: 
 
   return (
     <Box flexDirection="column">
-      {visible.map((it, i) => (
-        <MessageRow key={i} item={it} width={props.width} />
-      ))}
+      {visible.map((it, i) => {
+        const next = i + 1 < visible.length ? visible[i + 1] : null;
+        const needsGap = Boolean(next) && !(it.kind === "meta" && next?.kind === "meta");
+        return (
+          <Box key={i} flexDirection="column">
+            <MessageRow item={it} width={props.width} />
+            {needsGap ? <Text>{" "}</Text> : null}
+          </Box>
+        );
+      })}
     </Box>
   );
 }
