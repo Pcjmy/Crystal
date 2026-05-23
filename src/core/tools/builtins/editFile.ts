@@ -10,7 +10,7 @@ const inputSchema = z.object({
 
 export const editFileTool: ToolSpec<
   z.infer<typeof inputSchema>,
-  { ok: true; bytesWritten: number; content: string } | { ok: false; error: string }
+  { ok: true; path: string; bytesWritten: number; content: string } | { ok: false; path: string; error: string }
 > = {
   name: "editFile",
   description: "Write a UTF-8 text file in the workspace",
@@ -19,7 +19,8 @@ export const editFileTool: ToolSpec<
   async execute(input, ctx) {
     if (!ctx.allowEdit) {
       return { 
-        ok: false, 
+        ok: false,
+        path: input.path,
         error: "Editing is disabled by policy. Please run crystal with --allow-edit or set CRYSTAL_ALLOW_EDIT=true to enable." 
       };
     }
@@ -27,6 +28,6 @@ export const editFileTool: ToolSpec<
     await ensureParentDir(abs);
     await Bun.write(abs, input.content);
     const bytesWritten = Buffer.byteLength(input.content, "utf8");
-    return { ok: true, bytesWritten, content: input.content };
+    return { ok: true, path: input.path, bytesWritten, content: input.content };
   },
 };

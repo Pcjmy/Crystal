@@ -28,7 +28,7 @@ function looksTextFile(filePath: string): boolean {
 
 export const searchTool: ToolSpec<
   z.infer<typeof inputSchema>,
-  { ok: true; matches: Match[] } | { ok: false; error: string }
+  { ok: true; query: string; matches: Match[] } | { ok: false; query: string; error: string }
 > = {
   name: "search",
   description: "Search for a string in workspace files",
@@ -59,6 +59,6 @@ export const searchTool: ToolSpec<
       }
     }
 
-    return { ok: true, matches };
+    return { ok: true, query: input.query, matches };
   },
 };

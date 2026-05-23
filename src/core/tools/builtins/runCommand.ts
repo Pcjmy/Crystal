@@ -10,15 +10,16 @@ const inputSchema = z.object({
 
 export const runCommandTool: ToolSpec<
   z.infer<typeof inputSchema>,
-  | { ok: boolean; exitCode: number; stdout: string; stderr: string }
-  | { ok: false; error: string; stdout?: string; stderr?: string }
+  | { ok: boolean; command: string; cwd: string; exitCode: number; stdout: string; stderr: string }
+  | { ok: false; command: string; cwd: string; error: string; stdout?: string; stderr?: string }
 > = {
   name: "runCommand",
   description: "Run a shell command (guarded by policy)",
   inputSchema,
   permission: { kind: "confirm" },
   async execute(input, ctx) {
-    if (!ctx.allowRun) return { ok: false, error: "Command execution is disabled by policy" };
+    const cwd = input.cwd ?? ctx.workspaceRoot;
+    if (!ctx.allowRun) return { ok: false, command: input.command, cwd, error: "Command execution is disabled by policy" };
 
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), input.timeoutMs);
@@ -26,7 +27,7 @@ export const runCommandTool: ToolSpec<
 
     try {
       const proc = Bun.spawn(["powershell", "-NoProfile", "-Command", input.command], {
-        cwd: input.cwd ?? ctx.workspaceRoot,
+        cwd,
         stdout: "pipe",
         stderr: "pipe",
         signal: combinedSignal,
@@ -38,12 +39,14 @@ export const runCommandTool: ToolSpec<
 
       return {
         ok: exitCode === 0,
+        command: input.command,
+        cwd,
         exitCode,
         stdout: new TextDecoder().decode(stdoutBuf),
         stderr: new TextDecoder().decode(stderrBuf),
       };
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+      return { ok: false, command: input.command, cwd, error: e instanceof Error ? e.message : "Unknown error" };
     } finally {
       clearTimeout(t);
     }
