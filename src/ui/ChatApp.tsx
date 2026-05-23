@@ -42,7 +42,9 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
   const [sessionId, setSessionId] = useState(props.sessionId);
   const sessionIdRef = useRef(props.sessionId);
   const [allowEditInSession, setAllowEditInSession] = useState(props.allowEdit);
+  const [allowRunInSession, setAllowRunInSession] = useState(props.allowRun);
   const [pendingEditConfirm, setPendingEditConfirm] = useState<{ path: string } | null>(null);
+  const [pendingRunConfirm, setPendingRunConfirm] = useState<{ command: string } | null>(null);
   const [pendingDenyFeedback, setPendingDenyFeedback] = useState<{ path: string; value: string } | null>(null);
   const [confirmSelectionIndex, setConfirmSelectionIndex] = useState(0);
   const [resumeMenu, setResumeMenu] = useState<{
@@ -64,6 +66,23 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
 
   const onToolConfirm = useCallback(
     async (req: ToolConfirmRequest): Promise<ToolConfirmDecision> => {
+      if (req.tool.name === "runCommand") {
+        if (allowRunInSession) return { action: "allow", ctxPatch: { allowRun: true } };
+
+        const command = (() => {
+          if (typeof req.parsedInput !== "object" || req.parsedInput === null) return "command";
+          const obj = req.parsedInput as Record<string, unknown>;
+          const c = obj["command"];
+          return typeof c === "string" && c.length ? c : "command";
+        })();
+
+        return await new Promise<ToolConfirmDecision>((resolve) => {
+          pendingToolDecisionRef.current = resolve;
+          setConfirmSelectionIndex(0);
+          setPendingRunConfirm({ command });
+        });
+      }
+
       if (req.tool.name !== "editFile") return { action: "allow" };
 
       const path = (() => {
@@ -81,7 +100,7 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
         setPendingEditConfirm({ path });
       });
     },
-    [allowEditInSession],
+    [allowEditInSession, allowRunInSession],
   );
 
   const submit = useCallback(
@@ -127,7 +146,7 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
           toolUseContext: {
             workspaceRoot: props.workspaceRoot,
             sessionId: sessionIdRef.current,
-            allowRun: props.allowRun,
+            allowRun: allowRunInSession,
             allowEdit: allowEditInSession,
           },
         },
@@ -250,6 +269,7 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
       if (resolve) {
         pendingToolDecisionRef.current = null;
         setPendingEditConfirm(null);
+        setPendingRunConfirm(null);
         setPendingDenyFeedback(null);
         resolve({ action: "deny" });
       }
@@ -288,6 +308,66 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
 
       if (!key.ctrl && !key.meta && ch) {
         setPendingDenyFeedback((s) => (s ? { ...s, value: s.value + ch } : s));
+        return;
+      }
+
+      return;
+    }
+
+    if (pendingRunConfirm) {
+      if (key.upArrow) {
+        setConfirmSelectionIndex((i) => (i + 2) % 3);
+        return;
+      }
+
+      if (key.downArrow) {
+        setConfirmSelectionIndex((i) => (i + 1) % 3);
+        return;
+      }
+
+      if (key.return) {
+        const resolve = pendingToolDecisionRef.current;
+        const selected = confirmSelectionIndex;
+        pendingToolDecisionRef.current = null;
+        setPendingRunConfirm(null);
+
+        if (selected === 0) {
+          resolve?.({ action: "allow", ctxPatch: { allowRun: true } });
+          return;
+        }
+
+        if (selected === 1) {
+          setAllowRunInSession(true);
+          resolve?.({ action: "allow", ctxPatch: { allowRun: true } });
+          return;
+        }
+
+        resolve?.({ action: "deny" });
+        return;
+      }
+
+      if (ch === "1" && !key.ctrl && !key.meta) {
+        const resolve = pendingToolDecisionRef.current;
+        pendingToolDecisionRef.current = null;
+        setPendingRunConfirm(null);
+        resolve?.({ action: "allow", ctxPatch: { allowRun: true } });
+        return;
+      }
+
+      if ((ch === "2" && !key.ctrl && !key.meta) || (key.meta && ch.toLowerCase() === "r")) {
+        const resolve = pendingToolDecisionRef.current;
+        pendingToolDecisionRef.current = null;
+        setPendingRunConfirm(null);
+        setAllowRunInSession(true);
+        resolve?.({ action: "allow", ctxPatch: { allowRun: true } });
+        return;
+      }
+
+      if ((ch === "3" && !key.ctrl && !key.meta) || key.escape) {
+        const resolve = pendingToolDecisionRef.current;
+        pendingToolDecisionRef.current = null;
+        setPendingRunConfirm(null);
+        resolve?.({ action: "deny" });
         return;
       }
 
@@ -415,13 +495,36 @@ export function ChatApp(props: { workspaceRoot: string; sessionId: string; allow
             providerLabel={providerLabel}
             sessionId={sessionId}
             workspaceRoot={props.workspaceRoot}
-            allowRun={props.allowRun}
+            allowRun={allowRunInSession}
             allowEdit={allowEditInSession}
             width={stdoutWidth}
             totalTokens={totalTokens}
           />
         ) : null}
-        {pendingEditConfirm ? (
+        {pendingRunConfirm ? (
+          <Box flexDirection="column" borderStyle="round" borderColor={THEME.panel} paddingX={1} paddingY={0} marginTop={1}>
+            <Text>Do you want to run this command?</Text>
+            <Text dimColor wrap="wrap">
+              {pendingRunConfirm.command}
+            </Text>
+            <Text dimColor>{" "}</Text>
+            <Text>
+              <Text color={confirmSelectionIndex === 0 ? THEME.brand : THEME.hint}>
+                {confirmSelectionIndex === 0 ? "> " : "  "}1. Yes
+              </Text>
+            </Text>
+            <Text>
+              <Text color={confirmSelectionIndex === 1 ? THEME.brand : THEME.hint}>
+                {confirmSelectionIndex === 1 ? "> " : "  "}2. Yes, and don't ask again this session (alt + r)
+              </Text>
+            </Text>
+            <Text>
+              <Text color={confirmSelectionIndex === 2 ? THEME.brand : THEME.hint}>
+                {confirmSelectionIndex === 2 ? "> " : "  "}3. No
+              </Text>
+            </Text>
+          </Box>
+        ) : pendingEditConfirm ? (
           <Box flexDirection="column" borderStyle="round" borderColor={THEME.panel} paddingX={1} paddingY={0} marginTop={1}>
             <Text>{`Do you want to make this edit to ${pendingEditConfirm.path}?`}</Text>
             <Text dimColor>{" "}</Text>
